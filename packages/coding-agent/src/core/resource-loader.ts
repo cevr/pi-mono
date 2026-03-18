@@ -785,6 +785,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		];
 		const projectRoots = [
 			join(this.cwd, CONFIG_DIR_NAME, "skills"),
+			join(this.cwd, ".claude", "skills"),
+			join(this.cwd, ".agents", "skills"),
 			join(this.cwd, CONFIG_DIR_NAME, "prompts"),
 			join(this.cwd, CONFIG_DIR_NAME, "themes"),
 			join(this.cwd, CONFIG_DIR_NAME, "extensions"),

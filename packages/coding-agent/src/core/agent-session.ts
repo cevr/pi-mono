@@ -75,6 +75,7 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.j
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
 import { getLatestCompactionEntry } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
+import { getSkillReferenceToken, resolveSkillReference } from "./skills.js";
 import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo, type SlashCommandLocation } from "./slash-commands.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import type { BashOperations } from "./tools/bash.js";
@@ -1046,13 +1047,23 @@ export class AgentSession {
 		const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
 
-		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
-		if (!skill) return text; // Unknown skill, pass through
+		const resolution = resolveSkillReference(skillName, this.resourceLoader.getSkills().skills);
+		const skill = resolution.skill;
+		if (!skill) {
+			if (resolution.error) {
+				this._extensionRunner?.emitError({
+					extensionPath: skillName,
+					event: "skill_expansion",
+					error: resolution.error,
+				});
+			}
+			return text;
+		}
 
 		try {
 			const content = readFileSync(skill.filePath, "utf-8");
 			const body = stripFrontmatter(content).trim();
-			const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+			const skillBlock = `<skill name="${getSkillReferenceToken(skill)}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
 			return args ? `${skillBlock}\n\n${args}` : skillBlock;
 		} catch (err) {
 			// Emit error like extension commands do
@@ -2102,7 +2113,7 @@ export class AgentSession {
 			}));
 
 			const skills: SlashCommandInfo[] = this._resourceLoader.getSkills().skills.map((skill) => ({
-				name: `skill:${skill.name}`,
+				name: `skill:${getSkillReferenceToken(skill)}`,
 				description: skill.description,
 				source: "skill",
 				location: normalizeLocation(skill.source),

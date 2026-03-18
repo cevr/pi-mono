@@ -95,7 +95,7 @@ Prompt content.`,
 			expect(prompts.some((p) => p.name === "test-prompt")).toBe(true);
 		});
 
-		it("should prefer project resources over user on name collisions", async () => {
+		it("should prefer project prompts/themes and keep qualified local skill variants", async () => {
 			const userPromptsDir = join(agentDir, "prompts");
 			const projectPromptsDir = join(cwd, ".pi", "prompts");
 			mkdirSync(userPromptsDir, { recursive: true });
@@ -107,10 +107,13 @@ Prompt content.`,
 
 			const userSkillDir = join(agentDir, "skills", "collision-skill");
 			const projectSkillDir = join(cwd, ".pi", "skills", "collision-skill");
+			const claudeSkillDir = join(cwd, ".claude", "skills", "collision-skill");
 			mkdirSync(userSkillDir, { recursive: true });
 			mkdirSync(projectSkillDir, { recursive: true });
+			mkdirSync(claudeSkillDir, { recursive: true });
 			const userSkillPath = join(userSkillDir, "SKILL.md");
 			const projectSkillPath = join(projectSkillDir, "SKILL.md");
+			const claudeSkillPath = join(claudeSkillDir, "SKILL.md");
 			writeFileSync(
 				userSkillPath,
 				`---
@@ -126,6 +129,14 @@ name: collision-skill
 description: project
 ---
 Project skill`,
+			);
+			writeFileSync(
+				claudeSkillPath,
+				`---
+name: collision-skill
+description: claude
+---
+Claude skill`,
 			);
 
 			const baseTheme = JSON.parse(
@@ -148,8 +159,15 @@ Project skill`,
 			const prompt = loader.getPrompts().prompts.find((p) => p.name === "commit");
 			expect(prompt?.filePath).toBe(projectPromptPath);
 
-			const skill = loader.getSkills().skills.find((s) => s.name === "collision-skill");
-			expect(skill?.filePath).toBe(projectSkillPath);
+			const skills = loader.getSkills().skills.filter((s) => s.name === "collision-skill");
+			expect(skills.map((skill) => skill.token)).toEqual([
+				"collision-skill:.pi",
+				"collision-skill:.claude",
+				"collision-skill",
+			]);
+			expect(skills.find((skill) => skill.token === "collision-skill")?.filePath).toBe(userSkillPath);
+			expect(skills.find((skill) => skill.token === "collision-skill:.pi")?.filePath).toBe(projectSkillPath);
+			expect(skills.find((skill) => skill.token === "collision-skill:.claude")?.filePath).toBe(claudeSkillPath);
 
 			const theme = loader.getThemes().themes.find((t) => t.name === "collision-theme");
 			expect(theme?.sourcePath).toBe(projectThemePath);

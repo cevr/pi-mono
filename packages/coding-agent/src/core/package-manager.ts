@@ -320,14 +320,14 @@ function findGitRepoRoot(startDir: string): string | null {
 	}
 }
 
-function collectAncestorAgentsSkillDirs(startDir: string): string[] {
+function collectAncestorSkillDirs(startDir: string, hiddenDirName: ".agents" | ".claude"): string[] {
 	const skillDirs: string[] = [];
 	const resolvedStartDir = resolve(startDir);
 	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
 
 	let dir = resolvedStartDir;
 	while (true) {
-		skillDirs.push(join(dir, ".agents", "skills"));
+		skillDirs.push(join(dir, hiddenDirName, "skills"));
 		if (gitRepoRoot && dir === gitRepoRoot) {
 			break;
 		}
@@ -1812,8 +1812,12 @@ export class DefaultPackageManager implements PackageManager {
 			themes: join(projectBaseDir, "themes"),
 		};
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
-		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
+		const userClaudeSkillsDir = join(getHomeDir(), ".claude", "skills");
+		const projectAgentsSkillDirs = collectAncestorSkillDirs(this.cwd, ".agents").filter(
 			(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
+		);
+		const projectClaudeSkillDirs = collectAncestorSkillDirs(this.cwd, ".claude").filter(
+			(dir) => resolve(dir) !== resolve(userClaudeSkillsDir),
 		);
 
 		const addResources = (
@@ -1841,6 +1845,7 @@ export class DefaultPackageManager implements PackageManager {
 			"skills",
 			[
 				...collectAutoSkillEntries(projectDirs.skills),
+				...projectClaudeSkillDirs.flatMap((dir) => collectAutoSkillEntries(dir)),
 				...projectAgentsSkillDirs.flatMap((dir) => collectAutoSkillEntries(dir)),
 			],
 			projectMetadata,

@@ -1,11 +1,27 @@
-import { homedir } from "os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.js";
-import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.js";
+import {
+	formatSkillsForPrompt,
+	loadSkills,
+	loadSkillsFromDir,
+	resolveSkillReference,
+	type Skill,
+} from "../src/core/skills.js";
 
 const fixturesDir = resolve(__dirname, "fixtures/skills");
 const collisionFixturesDir = resolve(__dirname, "fixtures/skills-collision");
+
+function withTempDir(run: (dir: string) => void): void {
+	const dir = mkdtempSync(join(tmpdir(), "skills-test-"));
+	try {
+		run(dir);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 describe("skills", () => {
 	describe("loadSkillsFromDir", () => {
@@ -286,13 +302,14 @@ describe("skills", () => {
 					baseDir: "/path/two",
 					source: "test",
 					disableModelInvocation: false,
+					token: "skill-two:.claude",
 				},
 			];
 
 			const result = formatSkillsForPrompt(skills);
 
 			expect(result).toContain("<name>skill-one</name>");
-			expect(result).toContain("<name>skill-two</name>");
+			expect(result).toContain("<name>skill-two:.claude</name>");
 			expect((result.match(/<skill>/g) || []).length).toBe(2);
 		});
 
@@ -379,45 +396,135 @@ describe("skills", () => {
 			});
 			expect(withTilde.length).toBe(withoutTilde.length);
 		});
+
+		it("should discover .claude and .agents skills and qualify duplicate local variants", () => {
+			withTempDir((tempDir) => {
+				const agentDir = join(tempDir, "agent");
+				const cwd = join(tempDir, "project");
+				const globalSkillDir = join(agentDir, "skills", "duplicate");
+				const piSkillDir = join(cwd, ".pi", "skills", "duplicate");
+				const claudeSkillDir = join(cwd, ".claude", "skills", "duplicate");
+				const agentsSkillDir = join(cwd, ".agents", "skills", "duplicate");
+				const localOnlySkillDir = join(cwd, ".claude", "skills", "local-only");
+
+				for (const dir of [globalSkillDir, piSkillDir, claudeSkillDir, agentsSkillDir, localOnlySkillDir]) {
+					mkdirSync(dir, { recursive: true });
+				}
+
+				writeFileSync(join(globalSkillDir, "SKILL.md"), "---\nname: duplicate\ndescription: global\n---\n");
+				writeFileSync(join(piSkillDir, "SKILL.md"), "---\nname: duplicate\ndescription: pi\n---\n");
+				writeFileSync(join(claudeSkillDir, "SKILL.md"), "---\nname: duplicate\ndescription: claude\n---\n");
+				writeFileSync(join(agentsSkillDir, "SKILL.md"), "---\nname: duplicate\ndescription: agents\n---\n");
+				writeFileSync(join(localOnlySkillDir, "SKILL.md"), "---\nname: local-only\ndescription: local only\n---\n");
+
+				const { skills, diagnostics } = loadSkills({ cwd, agentDir });
+				expect(diagnostics).toHaveLength(0);
+
+				const duplicateTokens = skills.filter((skill) => skill.name === "duplicate").map((skill) => skill.token);
+				expect(duplicateTokens).toEqual(["duplicate", "duplicate:.pi", "duplicate:.claude", "duplicate:.agents"]);
+
+				const localOnly = skills.find((skill) => skill.name === "local-only");
+				expect(localOnly?.token).toBe("local-only");
+				expect(localOnly?.location).toBe(".claude");
+				expect(localOnly?.isLocal).toBe(true);
+			});
+		});
+
+		it("should resolve plain and qualified skill references consistently", () => {
+			const skills: Skill[] = [
+				{
+					name: "dup",
+					description: "global",
+					filePath: "/global",
+					baseDir: "/global",
+					source: "user",
+					disableModelInvocation: false,
+					location: "global",
+					isLocal: false,
+					token: "dup",
+					displayName: "dup",
+				},
+				{
+					name: "dup",
+					description: "project",
+					filePath: "/pi",
+					baseDir: "/pi",
+					source: "project",
+					disableModelInvocation: false,
+					location: ".pi",
+					isLocal: true,
+					token: "dup:.pi",
+					displayName: "dup (.pi)",
+				},
+				{
+					name: "local",
+					description: "claude",
+					filePath: "/claude",
+					baseDir: "/claude",
+					source: "project",
+					disableModelInvocation: false,
+					location: ".claude",
+					isLocal: true,
+					token: "local:.claude",
+					displayName: "local (.claude)",
+				},
+				{
+					name: "local",
+					description: "agents",
+					filePath: "/agents",
+					baseDir: "/agents",
+					source: "project",
+					disableModelInvocation: false,
+					location: ".agents",
+					isLocal: true,
+					token: "local:.agents",
+					displayName: "local (.agents)",
+				},
+			];
+
+			expect(resolveSkillReference("dup", skills).skill?.filePath).toBe("/global");
+			expect(resolveSkillReference("dup:.pi", skills).skill?.filePath).toBe("/pi");
+			expect(resolveSkillReference("local", skills).error).toContain("ambiguous");
+			expect(resolveSkillReference("local:.claude", skills).skill?.filePath).toBe("/claude");
+		});
 	});
 
 	describe("collision handling", () => {
-		it("should detect name collisions and keep first skill", () => {
-			// Load from first directory
-			const first = loadSkillsFromDir({
-				dir: join(collisionFixturesDir, "first"),
-				source: "first",
+		it("should keep both global and local duplicates with distinct tokens", () => {
+			withTempDir((tempDir) => {
+				const agentDir = join(tempDir, "agent");
+				const cwd = join(tempDir, "project");
+				mkdirSync(join(agentDir, "skills", "calendar"), { recursive: true });
+				mkdirSync(join(cwd, ".pi", "skills", "calendar"), { recursive: true });
+				writeFileSync(
+					join(agentDir, "skills", "calendar", "SKILL.md"),
+					"---\nname: calendar\ndescription: global calendar\n---\n",
+				);
+				writeFileSync(
+					join(cwd, ".pi", "skills", "calendar", "SKILL.md"),
+					"---\nname: calendar\ndescription: local calendar\n---\n",
+				);
+
+				const { skills, diagnostics } = loadSkills({ cwd, agentDir });
+				expect(diagnostics).toHaveLength(0);
+				expect(skills.filter((skill) => skill.name === "calendar").map((skill) => skill.token)).toEqual([
+					"calendar",
+					"calendar:.pi",
+				]);
+			});
+		});
+
+		it("should keep first skill when two globals would produce the same token", () => {
+			const { skills, diagnostics } = loadSkills({
+				agentDir: resolve(__dirname, "fixtures/empty-agent"),
+				cwd: resolve(__dirname, "fixtures/empty-cwd"),
+				skillPaths: [join(collisionFixturesDir, "first"), join(collisionFixturesDir, "second")],
+				includeDefaults: false,
 			});
 
-			const second = loadSkillsFromDir({
-				dir: join(collisionFixturesDir, "second"),
-				source: "second",
-			});
-
-			// Simulate the collision behavior from loadSkills()
-			const skillMap = new Map<string, Skill>();
-			const collisionWarnings: Array<{ skillPath: string; message: string }> = [];
-
-			for (const skill of first.skills) {
-				skillMap.set(skill.name, skill);
-			}
-
-			for (const skill of second.skills) {
-				const existing = skillMap.get(skill.name);
-				if (existing) {
-					collisionWarnings.push({
-						skillPath: skill.filePath,
-						message: `name collision: "${skill.name}" already loaded from ${existing.filePath}`,
-					});
-				} else {
-					skillMap.set(skill.name, skill);
-				}
-			}
-
-			expect(skillMap.size).toBe(1);
-			expect(skillMap.get("calendar")?.source).toBe("first");
-			expect(collisionWarnings).toHaveLength(1);
-			expect(collisionWarnings[0].message).toContain("name collision");
+			expect(skills).toHaveLength(1);
+			expect(skills[0]?.token).toBe("calendar");
+			expect(diagnostics.some((d: ResourceDiagnostic) => d.type === "collision")).toBe(true);
 		});
 	});
 });

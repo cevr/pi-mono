@@ -18,6 +18,7 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
+import { getSkillReferenceToken } from "../../core/skills.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
@@ -565,7 +566,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				// Skills (source is always "user" | "project" | "path" in coding-agent)
 				for (const skill of session.resourceLoader.getSkills().skills) {
 					commands.push({
-						name: `skill:${skill.name}`,
+						name: `skill:${getSkillReferenceToken(skill)}`,
 						description: skill.description,
 						source: "skill",
 						location: skill.source as RpcSlashCommand["location"],

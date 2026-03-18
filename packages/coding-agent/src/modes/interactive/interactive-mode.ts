@@ -61,6 +61,7 @@ import { findExactModelReferenceMatch, resolveModelScope } from "../../core/mode
 import { DefaultPackageManager } from "../../core/package-manager.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
+import { getSkillReferenceToken } from "../../core/skills.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
@@ -342,7 +343,7 @@ export class InteractiveMode {
 		const skillCommandList: SlashCommand[] = [];
 		if (this.settingsManager.getEnableSkillCommands()) {
 			for (const skill of this.session.resourceLoader.getSkills().skills) {
-				const commandName = `skill:${skill.name}`;
+				const commandName = `skill:${getSkillReferenceToken(skill)}`;
 				this.skillCommands.set(commandName, skill.filePath);
 				skillCommandList.push({ name: commandName, description: skill.description });
 			}

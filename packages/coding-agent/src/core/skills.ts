@@ -13,6 +13,11 @@ const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
+const PROJECT_SKILL_DIR_NAMES = [CONFIG_DIR_NAME, ".claude", ".agents"] as const;
+const SKILL_REFERENCE_RE = /^([a-z][a-z0-9-]*)(?::(global|local|\.pi|\.claude|\.agents))?$/;
+
+export type SkillSelector = "global" | "local" | ".pi" | ".claude" | ".agents";
+export type SkillLocation = Exclude<SkillSelector, "local">;
 
 type IgnoreMatcher = ReturnType<typeof ignore>;
 
@@ -63,6 +68,141 @@ function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): void {
 	}
 }
 
+function isUnderPath(target: string, root: string): boolean {
+	const normalizedTarget = resolve(target);
+	const normalizedRoot = resolve(root);
+	if (normalizedTarget === normalizedRoot) {
+		return true;
+	}
+	const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
+	return normalizedTarget.startsWith(prefix);
+}
+
+function getProjectSkillDirs(cwd: string): Array<{ dir: string; location: Exclude<SkillLocation, "global"> }> {
+	return PROJECT_SKILL_DIR_NAMES.map((name) => ({
+		dir: resolve(cwd, name, "skills"),
+		location: name,
+	})) as Array<{ dir: string; location: Exclude<SkillLocation, "global"> }>;
+}
+
+function getSkillLocationForPath(skillPath: string, cwd: string, agentDir: string): SkillLocation {
+	const resolvedPath = resolve(skillPath);
+	if (isUnderPath(resolvedPath, join(agentDir, "skills"))) {
+		return "global";
+	}
+	const projectDir = getProjectSkillDirs(cwd).find((entry) => isUnderPath(resolvedPath, entry.dir));
+	return projectDir?.location ?? "global";
+}
+
+function getSkillSourceForPath(skillPath: string, cwd: string, agentDir: string): "user" | "project" | "path" {
+	const resolvedPath = resolve(skillPath);
+	if (isUnderPath(resolvedPath, join(agentDir, "skills"))) {
+		return "user";
+	}
+	if (getProjectSkillDirs(cwd).some((entry) => isUnderPath(resolvedPath, entry.dir))) {
+		return "project";
+	}
+	return "path";
+}
+
+function shouldQualifySkill(location: SkillLocation, duplicateCount: number, hasGlobalVariant: boolean): boolean {
+	if (duplicateCount <= 1) return false;
+	if (hasGlobalVariant) return location !== "global";
+	return true;
+}
+
+function buildSkillToken(name: string, location: SkillLocation, duplicateCount = 1, hasGlobalVariant = false): string {
+	return shouldQualifySkill(location, duplicateCount, hasGlobalVariant) ? `${name}:${location}` : name;
+}
+
+function buildSkillDisplayName(
+	name: string,
+	location: SkillLocation,
+	duplicateCount: number,
+	hasGlobalVariant: boolean,
+): string {
+	if (!shouldQualifySkill(location, duplicateCount, hasGlobalVariant)) return name;
+	return `${name} (${location})`;
+}
+
+function getSkillLocation(skill: Skill): SkillLocation {
+	return skill.location ?? "global";
+}
+
+export function getSkillReferenceToken(skill: Skill): string {
+	return skill.token ?? buildSkillToken(skill.name, getSkillLocation(skill));
+}
+
+export function getSkillDisplayName(skill: Skill): string {
+	return skill.displayName ?? skill.name;
+}
+
+function parseSkillReference(reference: string): { name: string; selector?: SkillSelector } | null {
+	const trimmed = reference.trim();
+	const match = trimmed.match(SKILL_REFERENCE_RE);
+	if (!match) return null;
+	const [, name, selector] = match;
+	return { name: name!, selector: selector as SkillSelector | undefined };
+}
+
+export interface SkillResolution {
+	skill: Skill | null;
+	matches: Skill[];
+	error?: string;
+}
+
+export function resolveSkillReference(reference: string, skills: Skill[]): SkillResolution {
+	const parsed = parseSkillReference(reference);
+	if (!parsed) {
+		return {
+			skill: null,
+			matches: [],
+			error:
+				`invalid skill reference "${reference}". ` +
+				"Use foo, foo:global, foo:local, foo:.pi, foo:.claude, or foo:.agents.",
+		};
+	}
+
+	const matches = skills.filter((skill) => skill.name === parsed.name);
+	if (matches.length === 0) {
+		return { skill: null, matches: [] };
+	}
+
+	if (!parsed.selector) {
+		const global = matches.find((skill) => getSkillLocation(skill) === "global");
+		if (global) return { skill: global, matches };
+		if (matches.length === 1) return { skill: matches[0]!, matches };
+		return {
+			skill: null,
+			matches,
+			error: `skill "${parsed.name}" is ambiguous. Use one of: ${matches.map((skill) => getSkillReferenceToken(skill)).join(", ")}`,
+		};
+	}
+
+	const filtered =
+		parsed.selector === "local"
+			? matches.filter((skill) => skill.isLocal ?? getSkillLocation(skill) !== "global")
+			: matches.filter((skill) => getSkillLocation(skill) === parsed.selector);
+
+	if (filtered.length === 0) {
+		return {
+			skill: null,
+			matches,
+			error: `skill "${reference}" not found. Available matches: ${matches.map((skill) => getSkillReferenceToken(skill)).join(", ")}`,
+		};
+	}
+
+	if (filtered.length > 1) {
+		return {
+			skill: null,
+			matches: filtered,
+			error: `skill "${reference}" is ambiguous. Use one of: ${filtered.map((skill) => getSkillReferenceToken(skill)).join(", ")}`,
+		};
+	}
+
+	return { skill: filtered[0]!, matches: filtered };
+}
+
 export interface SkillFrontmatter {
 	name?: string;
 	description?: string;
@@ -77,6 +217,10 @@ export interface Skill {
 	baseDir: string;
 	source: string;
 	disableModelInvocation: boolean;
+	location?: SkillLocation;
+	isLocal?: boolean;
+	token?: string;
+	displayName?: string;
 }
 
 export interface LoadSkillsResult {
@@ -328,7 +472,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 
 	for (const skill of visibleSkills) {
 		lines.push("  <skill>");
-		lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+		lines.push(`    <name>${escapeXml(getSkillReferenceToken(skill))}</name>`);
 		lines.push(`    <description>${escapeXml(skill.description)}</description>`);
 		lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
 		lines.push("  </skill>");
@@ -378,19 +522,24 @@ function resolveSkillPath(p: string, cwd: string): string {
  */
 export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 	const { cwd = process.cwd(), agentDir, skillPaths = [], includeDefaults = true } = options;
-
-	// Resolve agentDir - if not provided, use default from config
 	const resolvedAgentDir = agentDir ?? getAgentDir();
 
-	const skillMap = new Map<string, Skill>();
+	type DiscoveredSkill = Skill & {
+		order: number;
+		location: SkillLocation;
+		isLocal: boolean;
+		token: string;
+		displayName: string;
+	};
+
+	const discovered: DiscoveredSkill[] = [];
 	const realPathSet = new Set<string>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
 
-	function addSkills(result: LoadSkillsResult) {
+	function addSkills(result: LoadSkillsResult, location: SkillLocation): void {
 		allDiagnostics.push(...result.diagnostics);
 		for (const skill of result.skills) {
-			// Resolve symlinks to detect duplicate files
 			let realPath: string;
 			try {
 				realPath = realpathSync(skill.filePath);
@@ -398,55 +547,28 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 				realPath = skill.filePath;
 			}
 
-			// Skip silently if we've already loaded this exact file (via symlink)
 			if (realPathSet.has(realPath)) {
 				continue;
 			}
 
-			const existing = skillMap.get(skill.name);
-			if (existing) {
-				collisionDiagnostics.push({
-					type: "collision",
-					message: `name "${skill.name}" collision`,
-					path: skill.filePath,
-					collision: {
-						resourceType: "skill",
-						name: skill.name,
-						winnerPath: existing.filePath,
-						loserPath: skill.filePath,
-					},
-				});
-			} else {
-				skillMap.set(skill.name, skill);
-				realPathSet.add(realPath);
-			}
+			realPathSet.add(realPath);
+			discovered.push({
+				...skill,
+				location,
+				isLocal: location !== "global",
+				token: skill.name,
+				displayName: skill.name,
+				order: discovered.length,
+			});
 		}
 	}
 
 	if (includeDefaults) {
-		addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true));
-		addSkills(loadSkillsFromDirInternal(resolve(cwd, CONFIG_DIR_NAME, "skills"), "project", true));
+		addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true), "global");
+		for (const projectSkillDir of getProjectSkillDirs(cwd)) {
+			addSkills(loadSkillsFromDirInternal(projectSkillDir.dir, "project", true), projectSkillDir.location);
+		}
 	}
-
-	const userSkillsDir = join(resolvedAgentDir, "skills");
-	const projectSkillsDir = resolve(cwd, CONFIG_DIR_NAME, "skills");
-
-	const isUnderPath = (target: string, root: string): boolean => {
-		const normalizedRoot = resolve(root);
-		if (target === normalizedRoot) {
-			return true;
-		}
-		const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-		return target.startsWith(prefix);
-	};
-
-	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
-		if (!includeDefaults) {
-			if (isUnderPath(resolvedPath, userSkillsDir)) return "user";
-			if (isUnderPath(resolvedPath, projectSkillsDir)) return "project";
-		}
-		return "path";
-	};
 
 	for (const rawPath of skillPaths) {
 		const resolvedPath = resolveSkillPath(rawPath, cwd);
@@ -457,13 +579,14 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 
 		try {
 			const stats = statSync(resolvedPath);
-			const source = getSource(resolvedPath);
+			const source = getSkillSourceForPath(resolvedPath, cwd, resolvedAgentDir);
+			const location = getSkillLocationForPath(resolvedPath, cwd, resolvedAgentDir);
 			if (stats.isDirectory()) {
-				addSkills(loadSkillsFromDirInternal(resolvedPath, source, true));
+				addSkills(loadSkillsFromDirInternal(resolvedPath, source, true), location);
 			} else if (stats.isFile() && resolvedPath.endsWith(".md")) {
 				const result = loadSkillFromFile(resolvedPath, source);
 				if (result.skill) {
-					addSkills({ skills: [result.skill], diagnostics: result.diagnostics });
+					addSkills({ skills: [result.skill], diagnostics: result.diagnostics }, location);
 				} else {
 					allDiagnostics.push(...result.diagnostics);
 				}
@@ -476,8 +599,47 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 		}
 	}
 
+	const duplicateCounts = new Map<string, number>();
+	const hasGlobalVariant = new Map<string, boolean>();
+	for (const skill of discovered) {
+		duplicateCounts.set(skill.name, (duplicateCounts.get(skill.name) ?? 0) + 1);
+		if (skill.location === "global") {
+			hasGlobalVariant.set(skill.name, true);
+		}
+	}
+
+	const tokenMap = new Map<string, Skill>();
+	const resolvedSkills: Skill[] = [];
+	for (const skill of discovered) {
+		const duplicateCount = duplicateCounts.get(skill.name) ?? 1;
+		const globalVariant = hasGlobalVariant.get(skill.name) ?? false;
+		const token = buildSkillToken(skill.name, skill.location, duplicateCount, globalVariant);
+		const enrichedSkill: Skill = {
+			...skill,
+			token,
+			displayName: buildSkillDisplayName(skill.name, skill.location, duplicateCount, globalVariant),
+		};
+		const existing = tokenMap.get(token);
+		if (existing) {
+			collisionDiagnostics.push({
+				type: "collision",
+				message: `name "${token}" collision`,
+				path: enrichedSkill.filePath,
+				collision: {
+					resourceType: "skill",
+					name: token,
+					winnerPath: existing.filePath,
+					loserPath: enrichedSkill.filePath,
+				},
+			});
+			continue;
+		}
+		tokenMap.set(token, enrichedSkill);
+		resolvedSkills.push(enrichedSkill);
+	}
+
 	return {
-		skills: Array.from(skillMap.values()),
+		skills: resolvedSkills,
 		diagnostics: [...allDiagnostics, ...collisionDiagnostics],
 	};
 }

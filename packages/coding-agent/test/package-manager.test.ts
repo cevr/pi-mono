@@ -177,7 +177,7 @@ Content`,
 		});
 	});
 
-	describe(".agents/skills auto-discovery", () => {
+	describe("hidden skill dir auto-discovery", () => {
 		it("should scan .agents/skills from cwd up to git repo root", async () => {
 			const repoRoot = join(tempDir, "repo");
 			const nestedCwd = join(repoRoot, "packages", "feature");
@@ -194,6 +194,36 @@ Content`,
 
 			const nestedSkill = join(repoRoot, "packages", ".agents", "skills", "nested", "SKILL.md");
 			mkdirSync(join(repoRoot, "packages", ".agents", "skills", "nested"), { recursive: true });
+			writeFileSync(nestedSkill, "---\nname: nested\ndescription: nested\n---\n");
+
+			const pm = new DefaultPackageManager({
+				cwd: nestedCwd,
+				agentDir,
+				settingsManager,
+			});
+
+			const result = await pm.resolve();
+			expect(result.skills.some((r) => r.path === repoRootSkill && r.enabled)).toBe(true);
+			expect(result.skills.some((r) => r.path === nestedSkill && r.enabled)).toBe(true);
+			expect(result.skills.some((r) => r.path === aboveRepoSkill)).toBe(false);
+		});
+
+		it("should scan .claude/skills from cwd up to git repo root", async () => {
+			const repoRoot = join(tempDir, "repo");
+			const nestedCwd = join(repoRoot, "packages", "feature");
+			mkdirSync(nestedCwd, { recursive: true });
+			mkdirSync(join(repoRoot, ".git"), { recursive: true });
+
+			const aboveRepoSkill = join(tempDir, ".claude", "skills", "above-repo", "SKILL.md");
+			mkdirSync(join(tempDir, ".claude", "skills", "above-repo"), { recursive: true });
+			writeFileSync(aboveRepoSkill, "---\nname: above-repo\ndescription: above\n---\n");
+
+			const repoRootSkill = join(repoRoot, ".claude", "skills", "repo-root", "SKILL.md");
+			mkdirSync(join(repoRoot, ".claude", "skills", "repo-root"), { recursive: true });
+			writeFileSync(repoRootSkill, "---\nname: repo-root\ndescription: repo\n---\n");
+
+			const nestedSkill = join(repoRoot, "packages", ".claude", "skills", "nested", "SKILL.md");
+			mkdirSync(join(repoRoot, "packages", ".claude", "skills", "nested"), { recursive: true });
 			writeFileSync(nestedSkill, "---\nname: nested\ndescription: nested\n---\n");
 
 			const pm = new DefaultPackageManager({
