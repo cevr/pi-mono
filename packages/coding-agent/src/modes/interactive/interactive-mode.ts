@@ -1219,6 +1219,7 @@ export class InteractiveMode {
 					}
 				})();
 			},
+			newSession: (options) => this.session.newSession(options).then((success) => ({ cancelled: !success })),
 			getSystemPrompt: () => this.session.systemPrompt,
 		});
 

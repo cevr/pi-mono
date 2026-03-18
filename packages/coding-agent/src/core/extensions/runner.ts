@@ -543,6 +543,7 @@ export class ExtensionRunner {
 			shutdown: () => this.shutdownHandler(),
 			getContextUsage: () => this.getContextUsageFn(),
 			compact: (options) => this.compactFn(options),
+			newSession: (options) => this.newSessionHandler(options),
 			getSystemPrompt: () => this.getSystemPromptFn(),
 		};
 	}

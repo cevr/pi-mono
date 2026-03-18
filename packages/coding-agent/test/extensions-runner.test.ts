@@ -75,6 +75,7 @@ describe("ExtensionRunner", () => {
 		shutdown: () => {},
 		getContextUsage: () => undefined,
 		compact: () => {},
+		newSession: async () => ({ cancelled: false }),
 		getSystemPrompt: () => "",
 	};
 

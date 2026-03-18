@@ -2178,6 +2178,7 @@ export class AgentSession {
 						}
 					})();
 				},
+				newSession: (options) => this.newSession(options).then((success) => ({ cancelled: !success })),
 				getSystemPrompt: () => this.systemPrompt,
 			},
 			{
