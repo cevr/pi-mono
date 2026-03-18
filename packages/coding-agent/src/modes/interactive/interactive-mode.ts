@@ -1990,7 +1990,7 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/copy") {
-				this.handleCopyCommand();
+				await this.handleCopyCommand();
 				this.editor.setText("");
 				return;
 			}
@@ -4066,7 +4066,7 @@ export class InteractiveMode {
 		}
 	}
 
-	private handleCopyCommand(): void {
+	private async handleCopyCommand(): Promise<void> {
 		const text = this.session.getLastAssistantText();
 		if (!text) {
 			this.showError("No agent messages to copy yet.");
@@ -4074,7 +4074,7 @@ export class InteractiveMode {
 		}
 
 		try {
-			copyToClipboard(text);
+			await copyToClipboard(text);
 			this.showStatus("Copied last agent message to clipboard");
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
