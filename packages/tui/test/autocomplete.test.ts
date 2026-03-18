@@ -220,6 +220,26 @@ describe("CombinedAutocompleteProvider", () => {
 			assert.ok(!values?.includes("@packages/ai/src/autocomplete.ts"));
 		});
 
+		test("matches slash-separated fuzzy queries across skipped middle directories", () => {
+			setupFolder(baseDir, {
+				files: {
+					"foo/big/dir/with/stuff/thing.ts": "export {};",
+					"foo/other.ts": "export {};",
+					"xfoo/big/dir/with/stuff/thing.ts": "export {};",
+					"bar/big/dir/with/stuff/thing.ts": "export {};",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+			const line = "@fo/thing";
+			const result = provider.getSuggestions([line], 0, line.length);
+
+			const values = result?.items.map((item) => item.value) ?? [];
+			assert.ok(values.includes("@foo/big/dir/with/stuff/thing.ts"));
+			assert.ok(!values.includes("@xfoo/big/dir/with/stuff/thing.ts"));
+			assert.ok(!values.includes("@bar/big/dir/with/stuff/thing.ts"));
+		});
+
 		test("matches directory in middle of path with --full-path", () => {
 			setupFolder(baseDir, {
 				files: {
@@ -328,6 +348,26 @@ describe("CombinedAutocompleteProvider", () => {
 
 			const applied = provider.applyCompletion([line], 0, cursorCol, item!, result!.prefix);
 			assert.strictEqual(applied.lines[0], '@"my folder/test.txt" ');
+		});
+
+		test("adds a trailing space after applying an @ directory completion", () => {
+			setupFolder(baseDir, {
+				dirs: ["src"],
+				files: {
+					"src/index.ts": "export {};",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+			const line = "@sr";
+			const result = provider.getSuggestions([line], 0, line.length);
+
+			assert.notEqual(result, null, "Should return suggestions for @ directory path");
+			const item = result?.items.find((entry) => entry.value === "@src/");
+			assert.ok(item, "Should find src/ suggestion");
+
+			const applied = provider.applyCompletion([line], 0, line.length, item!, result!.prefix);
+			assert.strictEqual(applied.lines[0], "@src/ ");
 		});
 	});
 

@@ -51,6 +51,40 @@ function findLastDelimiter(text: string): number {
 	return -1;
 }
 
+function matchesSlashSeparatedPathQuery(filePath: string, query: string): boolean {
+	const pathSegments = toDisplayPath(filePath)
+		.replace(/^\/+|\/+$/g, "")
+		.toLowerCase()
+		.split("/")
+		.filter(Boolean);
+	const querySegments = toDisplayPath(query)
+		.replace(/^\/+|\/+$/g, "")
+		.toLowerCase()
+		.split("/")
+		.filter(Boolean);
+	if (querySegments.length === 0) {
+		return true;
+	}
+
+	let pathIndex = 0;
+	for (const querySegment of querySegments) {
+		let matched = false;
+		while (pathIndex < pathSegments.length) {
+			if ((pathSegments[pathIndex] ?? "").startsWith(querySegment)) {
+				matched = true;
+				pathIndex += 1;
+				break;
+			}
+			pathIndex += 1;
+		}
+		if (!matched) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 function findUnclosedQuoteStart(text: string): number | null {
 	let inQuotes = false;
 	let quoteStart = -1;
@@ -373,16 +407,13 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 		// Check if we're completing a file attachment (prefix starts with "@")
 		if (prefix.startsWith("@")) {
-			// This is a file attachment completion
-			// Don't add space after directories so user can continue autocompleting
-			const isDirectory = item.label.endsWith("/");
-			const suffix = isDirectory ? "" : " ";
+			const suffix = adjustedAfterCursor.startsWith(" ") ? "" : " ";
 			const newLine = `${beforePrefix + item.value}${suffix}${adjustedAfterCursor}`;
 			const newLines = [...lines];
 			newLines[cursorLine] = newLine;
 
 			const hasTrailingQuote = item.value.endsWith('"');
-			const cursorOffset = isDirectory && hasTrailingQuote ? item.value.length - 1 : item.value.length;
+			const cursorOffset = hasTrailingQuote ? item.value.length - 1 : item.value.length;
 
 			return {
 				lines: newLines,
@@ -691,13 +722,21 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		try {
+			const normalizedQuery = toDisplayPath(query);
 			const scopedQuery = this.resolveScopedFuzzyQuery(query);
+			const querySegments = normalizedQuery
+				.replace(/^\/+|\/+$/g, "")
+				.split("/")
+				.filter(Boolean);
+			const useSlashSegmentMatching = !scopedQuery && querySegments.length > 1;
+			const fallbackQuery = querySegments[querySegments.length - 1] ?? query;
 			const fdBaseDir = scopedQuery?.baseDir ?? this.basePath;
-			const fdQuery = scopedQuery?.query ?? query;
+			const fdQuery = scopedQuery?.query ?? (useSlashSegmentMatching ? fallbackQuery : query);
 			const entries = walkDirectoryWithFd(fdBaseDir, this.fdPath, fdQuery, 100);
 
 			// Score entries
 			const scoredEntries = entries
+				.filter((entry) => !useSlashSegmentMatching || matchesSlashSeparatedPathQuery(entry.path, normalizedQuery))
 				.map((entry) => ({
 					...entry,
 					score: fdQuery ? this.scoreEntry(entry.path, fdQuery, entry.isDirectory) : 1,
