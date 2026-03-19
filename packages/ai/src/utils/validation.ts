@@ -28,6 +28,157 @@ if (!isBrowserExtension) {
 	}
 }
 
+type JsonSchemaLike = {
+	type?: string | string[];
+	properties?: Record<string, JsonSchemaLike>;
+	required?: string[];
+	items?: JsonSchemaLike;
+	anyOf?: JsonSchemaLike[];
+	oneOf?: JsonSchemaLike[];
+	enum?: unknown[];
+	const?: unknown;
+	additionalProperties?: JsonSchemaLike | boolean;
+};
+
+type AjvErrorLike = {
+	instancePath?: string;
+	message?: string;
+	params?: {
+		missingProperty?: string;
+	};
+};
+
+function formatReceivedArguments(arguments_: unknown): string {
+	return JSON.stringify(arguments_, null, 2) ?? String(arguments_);
+}
+
+function summarizeSchema(schema: JsonSchemaLike | undefined, depth = 0): string {
+	if (!schema || depth > 2) return "unknown";
+
+	if (schema.const !== undefined) {
+		return JSON.stringify(schema.const);
+	}
+
+	if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+		return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
+	}
+
+	const union = schema.anyOf ?? schema.oneOf;
+	if (Array.isArray(union) && union.length > 0) {
+		return union.map((member) => summarizeSchema(member, depth + 1)).join(" | ");
+	}
+
+	if (schema.type === "object") {
+		const properties = schema.properties ?? {};
+		const required = new Set(schema.required ?? []);
+		const entries = Object.entries(properties).map(([key, value]) => {
+			const optional = required.has(key) ? "" : "?";
+			return `${key}${optional}: ${summarizeSchema(value, depth + 1)}`;
+		});
+		return entries.length === 0 ? "{}" : `{ ${entries.join("; ")} }`;
+	}
+
+	if (schema.type === "array") {
+		return `Array<${summarizeSchema(schema.items, depth + 1)}>`;
+	}
+
+	if (Array.isArray(schema.type) && schema.type.length > 0) {
+		return schema.type.join(" | ");
+	}
+
+	if (typeof schema.type === "string") {
+		return schema.type;
+	}
+
+	return "value";
+}
+
+function summarizeTopLevelSchema(schema: JsonSchemaLike): string {
+	return summarizeSchema(schema);
+}
+
+function getSchemaAtInstancePath(
+	schema: JsonSchemaLike | undefined,
+	instancePath: string | undefined,
+): JsonSchemaLike | undefined {
+	if (!schema || !instancePath) return schema;
+
+	const segments = instancePath
+		.split("/")
+		.map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~"))
+		.filter(Boolean);
+
+	let current: JsonSchemaLike | undefined = schema;
+	for (const segment of segments) {
+		if (!current) return undefined;
+		if (current.type === "array") {
+			current = current.items;
+			continue;
+		}
+		if (current.type === "object") {
+			current = current.properties?.[segment];
+			continue;
+		}
+		return undefined;
+	}
+
+	return current;
+}
+
+function formatValidationErrors(schema: JsonSchemaLike, errors: AjvErrorLike[] | null | undefined): string {
+	if (!errors || errors.length === 0) {
+		return "- root: unknown validation error";
+	}
+
+	const grouped = new Map<string, AjvErrorLike[]>();
+	for (const err of errors) {
+		const path = err.instancePath ? err.instancePath.substring(1) : err.params?.missingProperty || "root";
+		const group = grouped.get(path) ?? [];
+		group.push(err);
+		grouped.set(path, group);
+	}
+
+	const formatted: string[] = [];
+	for (const [path, group] of grouped) {
+		const schemaAtPath = getSchemaAtInstancePath(schema, group[0]?.instancePath);
+		const hasConstErrors = group.some((err) => err.message === "must be equal to constant");
+		if (hasConstErrors && schemaAtPath) {
+			formatted.push(`- ${path}: expected ${summarizeSchema(schemaAtPath)}`);
+			continue;
+		}
+
+		for (const err of group) {
+			formatted.push(`- ${path}: ${err.message ?? "invalid value"}`);
+		}
+	}
+
+	return [...new Set(formatted)].join("\n");
+}
+
+function buildValidationErrorMessage(
+	tool: Tool,
+	toolCall: ToolCall,
+	errors: AjvErrorLike[] | null | undefined,
+): string {
+	const expectedShape = summarizeTopLevelSchema(tool.parameters as JsonSchemaLike);
+	const receivedArguments = formatReceivedArguments(toolCall.arguments);
+	const formattedErrors = formatValidationErrors(tool.parameters as JsonSchemaLike, errors);
+
+	return [
+		`Tool call rejected: invalid arguments for "${toolCall.name}".`,
+		"Fix the arguments and retry the same tool call once with corrected input.",
+		"Do not repeat the same invalid payload unchanged.",
+		"",
+		"Problems:",
+		formattedErrors,
+		"",
+		`Expected shape: ${expectedShape}`,
+		"",
+		"Received arguments:",
+		receivedArguments,
+	].join("\n");
+}
+
 /**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
  * @param tools Array of tool definitions
@@ -69,16 +220,5 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 		return args;
 	}
 
-	// Format validation errors nicely
-	const errors =
-		validate.errors
-			?.map((err: any) => {
-				const path = err.instancePath ? err.instancePath.substring(1) : err.params.missingProperty || "root";
-				return `  - ${path}: ${err.message}`;
-			})
-			.join("\n") || "Unknown validation error";
-
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
-
-	throw new Error(errorMessage);
+	throw new Error(buildValidationErrorMessage(tool, toolCall, validate.errors as AjvErrorLike[] | undefined));
 }
